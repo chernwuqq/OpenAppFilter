@@ -107,9 +107,15 @@ jobs:
       run: |
         cd "$OPENWRT_PATH"
         ./scripts/feeds update -a
-        # 移除 feeds 中可能存在的同名 luci-app-oaf，使用本仓库的版本
-        rm -rf feeds/luci/applications/luci-app-oaf 2>/dev/null || true
         ./scripts/feeds install -a
+        # 移除 feeds 自带的旧版 OAF 相关包(版本旧, 在内核6.12下有 -Werror 编译错误),
+        # 改用本仓库的 v7.0.1 版本(其 oaf Makefile 已含 KCFLAGS 抑制这些警告)
+        rm -rf feeds/packages/net/open-app-filter
+        rm -f package/feeds/packages/open-app-filter 2>/dev/null || true
+        rm -rf feeds/luci/applications/luci-app-oaf
+        rm -f package/feeds/luci/luci-app-oaf 2>/dev/null || true
+        rm -rf feeds/packages/kernel/oaf 2>/dev/null || true
+        rm -f package/feeds/packages/oaf 2>/dev/null || true
 
     - name: Install OAF Packages(安装OAF插件源码)
       run: |
