@@ -145,31 +145,13 @@ jobs:
       run: |
         cd "$OPENWRT_PATH"
         echo -e "$(nproc) thread compile"
-        # 清除可能残留的 oaf 构建标记(避免缓存里旧的空 .built 戳导致跳过), 强制重建内核模块
-        make package/oaf/clean 2>/dev/null || true
-        rm -rf build_dir/*/oaf 2>/dev/null || true
         # 全量 make(最小化 config): 工具链+内核+OAF+依赖; 缓存命中后只编 OAF, 很快
         make -j$(nproc) || make -j1 V=s
+        # 全量 make 可能因缓存里旧的 .built 戳跳过 oaf; clean 后单独编内核模块保证产出 oaf.ko
+        make package/oaf/clean 2>/dev/null || true
+        make package/oaf/compile V=s 2>&1 | tail -30 || make package/oaf/compile -j1 V=s
         echo "status=success" >> $GITHUB_OUTPUT
         echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
-
-    - name: Debug oaf build(调试oaf构建)
-      if: always()
-      run: |
-        cd "$OPENWRT_PATH"
-        echo "=== oaf Makefile 内容 ==="
-        cat package/oaf/Makefile
-        echo ""
-        echo "=== clean 后用 V=s 详细编译 oaf ==="
-        make package/oaf/clean 2>/dev/null || true
-        make package/oaf/compile V=s 2>&1 | tail -80 || true
-        echo ""
-        echo "=== 查找 oaf.ko ==="
-        find build_dir -name "oaf.ko" 2>/dev/null || echo "未找到 oaf.ko"
-        echo "=== 查找 kmod-oaf apk ==="
-        find bin -name "kmod-oaf*" 2>/dev/null || echo "未找到 kmod-oaf 包"
-        echo "=== oaf 相关 build_dir 结构 ==="
-        find build_dir -path "*oaf*" -maxdepth 6 2>/dev/null | head -20
 
     - name: Check Space Usage(检查空间使用情况)
       if: (!cancelled())
@@ -179,9 +161,10 @@ jobs:
       if: steps.compile.outputs.status == 'success'
       run: |
         mkdir -p artifacts
-        cd "$OPENWRT_PATH/bin/packages"
-        # 兼容 apk 与 ipk 两种格式
-        find . \( -name 'kmod-oaf*.apk' -o -name 'appfilter*.apk' -o -name 'luci-app-oaf*.apk' \
+        cd "$OPENWRT_PATH"
+        # kmod 包在 bin/targets/<target>/<subtarget>/packages/, 普通包在 bin/packages/<arch>/<repo>/
+        # 兼容 apk 与 ipk 两种格式, 两个目录都搜
+        find bin/packages bin/targets \( -name 'kmod-oaf*.apk' -o -name 'appfilter*.apk' -o -name 'luci-app-oaf*.apk' \
                -o -name 'kmod-oaf*.ipk' -o -name 'appfilter*.ipk' -o -name 'luci-app-oaf*.ipk' \) \
           -exec cp {} "$GITHUB_WORKSPACE/artifacts/" \;
         echo "=== 产物列表 ==="
