@@ -1,0 +1,175 @@
+name: Build OAF Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      openwrt_branch:
+        description: 'LiBwrt openwrt-6.x 分支 (需与固件一致以保证 kmod vermagic 匹配)'
+        required: true
+        default: '25.12-nss'
+      firmware_config_url:
+        description: '固件 .config 的 raw URL (从中提取内核/目标配置以保证 vermagic 匹配)'
+        required: true
+        default: 'https://raw.githubusercontent.com/chernwuqq/openwrt-ci/main/configs/ipq60xx-6.12-wifi-jdc.config'
+
+env:
+  REPO_URL: https://github.com/LiBwrt/openwrt-6.x.git
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    name: Build OAF for IPQ60XX-6.12-JDC
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Check Server Performance(检查服务器性能)
+      run: |
+        echo "警告⚠"
+        echo "分配的服务器性能有限，务必注意CPU性能！"
+        echo "--------------------------CPU信息--------------------------"
+        echo "CPU物理数量：$(cat /proc/cpuinfo | grep "physical id" | sort | uniq | wc -l)"
+        echo -e "CPU核心信息：$(cat /proc/cpuinfo | grep name | cut -f2 -d: | uniq -c) \n"
+        echo "--------------------------内存信息--------------------------"
+        echo -e "$(sudo lshw -short -C memory | grep GiB) \n"
+        echo "--------------------------硬盘信息--------------------------"
+        echo "硬盘数量：$(ls /dev/sd* | grep -v [1-9] | wc -l)" && df -hT
+
+    - name: Maximize build space & Add Swap(合并磁盘)
+      uses: easimon/maximize-build-space@master
+      with:
+        swap-size-mb: 1024
+        temp-reserve-mb: 100
+        root-reserve-mb: 1024
+
+    - name: Initialization Environment(初始化环境)
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo bash -c 'bash <(curl -sL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+        sudo -E apt -yqq install dos2unix
+        sudo -E apt -yqq install libfuse-dev
+        sudo -E apt -yqq autoremove --purge
+        sudo -E apt -yqq autoclean
+        sudo -E apt -yqq clean
+        sudo -E systemctl daemon-reload
+        sudo timedatectl set-timezone "$TZ"
+
+    - name: Checkout OpenAppFilter(检出插件源码)
+      uses: actions/checkout@main
+
+    - name: Clone OpenWrt Source(克隆源代码)
+      run: |
+        df -hT $GITHUB_WORKSPACE
+        git clone --depth 1 -b ${{ inputs.openwrt_branch }} $REPO_URL openwrt
+        echo "OPENWRT_PATH=$GITHUB_WORKSPACE/openwrt" >> $GITHUB_ENV
+        echo "REPO_BRANCH=${{ inputs.openwrt_branch }}" >> $GITHUB_ENV
+
+    - name: Generate Minimal Config(生成最小化配置)
+      run: |
+        curl -fsSL "${{ inputs.firmware_config_url }}" -o full.config
+        # 保留所有非 CONFIG_PACKAGE_* 的配置项(目标/内核/编译选项)，
+        # 这样内核 .config 与固件完全一致 → kmod-oaf 的 vermagic 与固件匹配；
+        # 丢弃所有 CONFIG_PACKAGE_* 避免编译几百个无关固件包，只单独编 OAF。
+        grep -vE '^CONFIG_PACKAGE_' full.config > "$OPENWRT_PATH/.config"
+        echo "CONFIG_PACKAGE_luci-app-oaf=y" >> "$OPENWRT_PATH/.config"
+        cd "$OPENWRT_PATH"
+        make defconfig > /dev/null 2>&1
+        SOURCE_REPO="$(echo $REPO_URL | awk -F '/' '{print $(NF)}')"
+        echo "SOURCE_REPO=$SOURCE_REPO" >> $GITHUB_ENV
+        DEVICE_TARGET=$(grep CONFIG_TARGET_BOARD .config | awk -F '"' '{print $2}')
+        echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_ENV
+        DEVICE_SUBTARGET=$(grep CONFIG_TARGET_SUBTARGET .config | awk -F '"' '{print $2}')
+        echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
+
+    - name: Cache Toolchain(缓存工具链与内核)
+      uses: HiGarfield/cachewrtbuild@main
+      with:
+        ccache: false
+        mixkey: ${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}
+        prefix: ${{ env.OPENWRT_PATH }}
+
+    - name: Install Feeds(安装feeds)
+      run: |
+        cd "$OPENWRT_PATH"
+        ./scripts/feeds update -a
+        # 移除 feeds 中可能存在的同名 luci-app-oaf，使用本仓库的版本
+        rm -rf feeds/luci/applications/luci-app-oaf 2>/dev/null || true
+        ./scripts/feeds install -a
+
+    - name: Install OAF Packages(安装OAF插件源码)
+      run: |
+        cd "$OPENWRT_PATH"
+        # 平铺复制到 package/ 下，使 `make package/<name>/compile` 按 README 方式可用
+        cp -r "$GITHUB_WORKSPACE/oaf" package/
+        cp -r "$GITHUB_WORKSPACE/open-app-filter" package/
+        cp -r "$GITHUB_WORKSPACE/luci-app-oaf" package/
+        # feeds install 可能重置了 .config，重新启用 OAF 并解析依赖
+        echo "CONFIG_PACKAGE_luci-app-oaf=y" >> .config
+        make defconfig > /dev/null 2>&1
+        echo "=== OAF 相关配置 ==="
+        grep -E 'CONFIG_PACKAGE_(luci-app-oaf|appfilter|kmod-oaf|libsqlite3|libcurl|libuci-lua|luci-lib-jsonc|luci-compat)' .config || true
+
+    - name: Download DL Package(下载DL软件包)
+      run: |
+        cd "$OPENWRT_PATH"
+        make download -j8
+        find dl -size -1024c -exec ls -l {} \;
+        find dl -size -1024c -exec rm -f {} \;
+
+    - name: Compile OAF Packages(开始编译OAF插件)
+      id: compile
+      run: |
+        cd "$OPENWRT_PATH"
+        echo -e "$(nproc) thread compile"
+        # 最小化 config 下 make 只编译: 工具链+内核+OAF三个包及其依赖
+        make -j$(nproc) || make -j1 V=s
+        echo "status=success" >> $GITHUB_OUTPUT
+        echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
+
+    - name: Check Space Usage(检查空间使用情况)
+      if: (!cancelled())
+      run: df -hT
+
+    - name: Collect Packages(收集产物)
+      if: steps.compile.outputs.status == 'success'
+      run: |
+        mkdir -p artifacts
+        cd "$OPENWRT_PATH/bin/packages"
+        # 兼容 apk 与 ipk 两种格式
+        find . \( -name 'kmod-oaf*.apk' -o -name 'appfilter*.apk' -o -name 'luci-app-oaf*.apk' \
+               -o -name 'kmod-oaf*.ipk' -o -name 'appfilter*.ipk' -o -name 'luci-app-oaf*.ipk' \) \
+          -exec cp {} "$GITHUB_WORKSPACE/artifacts/" \;
+        echo "=== 产物列表 ==="
+        ls -la "$GITHUB_WORKSPACE/artifacts/"
+        # 从 kmod 文件名提取内核版本号，用于 release tag
+        KVER=$(ls "$GITHUB_WORKSPACE/artifacts/" | grep -oP 'kmod-oaf-\K[0-9.]+' | head -1)
+        echo "KVER=${KVER:-unknown}" >> $GITHUB_ENV
+
+    - name: Upload Artifacts(上传到Artifact)
+      if: steps.compile.outputs.status == 'success'
+      uses: actions/upload-artifact@main
+      with:
+        name: oaf-packages-ipq60xx-${{ env.KVER }}
+        path: artifacts/*
+
+    - name: Upload to Release(发布到Release)
+      if: steps.compile.outputs.status == 'success'
+      uses: ncipollo/release-action@v1
+      with:
+        name: OAF v7 for IPQ60XX (kernel ${{ env.KVER }})
+        tag: oaf-ipq60xx-${{ env.KVER }}
+        allowUpdates: true
+        replacesArtifacts: true
+        token: ${{ secrets.GITHUB_TOKEN }}
+        artifacts: artifacts/*
+        body: |
+          OpenAppFilter 插件包 (IPQ60XX / JDC RE-SS-01)
+          
+          - 内核版本: ${{ env.KVER }}
+          - 源码: ${{ env.REPO_URL }} (${{ env.REPO_BRANCH }})
+          - 固件配置: ${{ inputs.firmware_config_url }}
+          - 构建时间: ${{ env.DATE }}
+          
+          包含: kmod-oaf (内核模块) / appfilter (用户态服务) / luci-app-oaf (LuCI 界面)
+          
+          注意: kmod-oaf 的 vermagic 需与固件内核完全匹配，安装前请确认内核版本一致。
