@@ -8,9 +8,9 @@ on:
         required: true
         default: '25.12-nss'
       firmware_config_url:
-        description: '固件 .config 的 raw URL (从中提取内核/目标配置以保证 vermagic 匹配)'
+        description: '固件 config.buildinfo 的 URL (固件解析后的完整配置, 保证内核 vermagic 匹配)'
         required: true
-        default: 'https://raw.githubusercontent.com/chernwuqq/openwrt-ci/main/configs/ipq60xx-6.12-wifi-jdc.config'
+        default: 'https://github.com/chernwuqq/openwrt-ci/releases/download/IPQ60XX-6.12-WIFI-JDC/config.buildinfo'
 
 env:
   REPO_URL: https://github.com/LiBwrt/openwrt-6.x.git
@@ -85,9 +85,10 @@ jobs:
     - name: Generate Minimal Config(生成最小化配置)
       run: |
         curl -fsSL "${{ inputs.firmware_config_url }}" -o full.config
-        # 保留所有非 CONFIG_PACKAGE_* 的配置项(目标/内核/编译选项)，
-        # 这样内核 .config 与固件完全一致 → kmod-oaf 的 vermagic 与固件匹配；
-        # 丢弃所有 CONFIG_PACKAGE_* 避免编译几百个无关固件包，只单独编 OAF。
+        # config.buildinfo 是固件解析后的完整配置(含 defconfig 补的内核默认项)。
+        # 保留所有非 CONFIG_PACKAGE_* 的配置项(目标/内核/编译选项, 与固件完全一致),
+        # 这样内核 .config 与固件一致 → kmod-oaf 的 vermagic 与固件匹配;
+        # 丢弃所有 CONFIG_PACKAGE_* 避免编译几百个无关固件包, 只单独编 OAF。
         grep -vE '^CONFIG_PACKAGE_' full.config > "$OPENWRT_PATH/.config"
         echo "CONFIG_PACKAGE_luci-app-oaf=y" >> "$OPENWRT_PATH/.config"
         cd "$OPENWRT_PATH"
