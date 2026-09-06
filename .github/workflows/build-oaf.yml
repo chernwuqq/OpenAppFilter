@@ -45,14 +45,29 @@ jobs:
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
-        sudo bash -c 'bash <(curl -sL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
-        sudo -E apt -yqq install dos2unix
-        sudo -E apt -yqq install libfuse-dev
-        sudo -E apt -yqq autoremove --purge
-        sudo -E apt -yqq autoclean
-        sudo -E apt -yqq clean
-        sudo -E systemctl daemon-reload
+        # 释放磁盘空间: 移除预装的 docker/dotnet/android/ghc 等(约释放 10GB+)
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
+        sudo docker system prune -af 2>/dev/null || true
+        sudo -E apt-get update
+        # 仅安装 OpenWrt 编译所需核心依赖(不用全量 init 脚本, 减少无用包)
+        sudo -E apt-get install -y --no-install-recommends \
+          build-essential flex bison gawk ninja-build bc perl pkg-config ca-certificates \
+          libssl-dev libncurses-dev zlib1g-dev libelf-dev libdw-dev \
+          git curl wget rsync unzip patch python3 python3-distutils
+        # 修复可能中断的 dpkg 状态
+        sudo dpkg --configure -a
         sudo timedatectl set-timezone "$TZ"
+        # po2lmo: luci.mk 编译 .po→.lmo 需要
+        TMP=$(mktemp -d)
+        git clone --filter=blob:none --no-checkout --depth 1 https://github.com/openwrt/luci.git "$TMP/luci"
+        cd "$TMP/luci"
+        git config core.sparseCheckout true
+        echo modules/luci-base/src > .git/info/sparse-checkout
+        git checkout
+        make -C modules/luci-base/src po2lmo
+        sudo cp -fp modules/luci-base/src/po2lmo /usr/bin/po2lmo
+        cd "$GITHUB_WORKSPACE"
+        sudo rm -rf "$TMP"
 
     - name: Checkout OpenAppFilter(检出插件源码)
       uses: actions/checkout@main
