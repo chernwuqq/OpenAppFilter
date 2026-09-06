@@ -121,8 +121,12 @@ jobs:
       run: |
         cd "$OPENWRT_PATH"
         echo -e "$(nproc) thread compile"
-        # 最小化 config 下 make 只编译: 工具链+内核+OAF三个包及其依赖
-        make -j$(nproc) || make -j1 V=s
+        # 1) 先构建工具链与内核 (kmod-oaf 必需; 首次较慢, 缓存后秒过)
+        make tools/install toolchain/install target/compile -j$(nproc) || make tools/install toolchain/install target/compile -j1 V=s
+        # 2) 只编译 OAF 三个目标 (+依赖), 不编整包固件/镜像, 速度快;
+        #    若依赖未自动解析(干净staging), 回退到全量 make 按依赖顺序构建
+        make package/oaf/compile package/open-app-filter/compile package/luci-app-oaf/compile -j$(nproc) || \
+          make -j$(nproc) || make -j1 V=s
         echo "status=success" >> $GITHUB_OUTPUT
         echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
 
