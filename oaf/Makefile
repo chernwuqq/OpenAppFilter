@@ -20,6 +20,11 @@ define KernelPackage/oaf/description
   oaf netfilter module 
 endef
 
+define Build/Prepare
+	mkdir -p $(PKG_BUILD_DIR)
+	cp -rf ./src/* $(PKG_BUILD_DIR)/
+endef
+
 KCFLAGS := -Wno-error=missing-prototypes \
            -Wno-error=missing-declarations \
            -Wno-error=unused-variable \
