@@ -153,6 +153,24 @@ jobs:
         echo "status=success" >> $GITHUB_OUTPUT
         echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
 
+    - name: Debug oaf build(调试oaf构建)
+      if: always()
+      run: |
+        cd "$OPENWRT_PATH"
+        echo "=== oaf Makefile 内容 ==="
+        cat package/oaf/Makefile
+        echo ""
+        echo "=== clean 后用 V=s 详细编译 oaf ==="
+        make package/oaf/clean 2>/dev/null || true
+        make package/oaf/compile V=s 2>&1 | tail -80 || true
+        echo ""
+        echo "=== 查找 oaf.ko ==="
+        find build_dir -name "oaf.ko" 2>/dev/null || echo "未找到 oaf.ko"
+        echo "=== 查找 kmod-oaf apk ==="
+        find bin -name "kmod-oaf*" 2>/dev/null || echo "未找到 kmod-oaf 包"
+        echo "=== oaf 相关 build_dir 结构 ==="
+        find build_dir -path "*oaf*" -maxdepth 6 2>/dev/null | head -20
+
     - name: Check Space Usage(检查空间使用情况)
       if: (!cancelled())
       run: df -hT
