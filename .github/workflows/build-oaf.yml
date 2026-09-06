@@ -53,7 +53,7 @@ jobs:
         sudo -E apt-get install -y --no-install-recommends \
           build-essential flex bison gawk ninja-build bc perl pkg-config ca-certificates \
           libssl-dev libncurses-dev zlib1g-dev libelf-dev libdw-dev \
-          git curl wget rsync unzip patch python3 python3-distutils
+          git curl wget rsync unzip patch python3 python3-setuptools python3-pip
         # 修复可能中断的 dpkg 状态
         sudo dpkg --configure -a
         sudo timedatectl set-timezone "$TZ"
